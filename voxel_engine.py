@@ -41,14 +41,13 @@ def ray_voxel_traversal(ray_origin, ray_direction, chunk, max_distance=128):
 
     # Ray parameter when crossing Voxel boundaries
     def t_scale(i, o, d, step):
-        # Distance to next boundary in that axis
         boundary = i + (1 if step > 0 else 0)
         return (boundary - o) / (d + 1e-8)
 
     tMaxX = t_scale(x, origin[0], direction[0], step_x)
     tMaxY = t_scale(y, origin[1], direction[1], step_y)
     tMaxZ = t_scale(z, origin[2], direction[2], step_z)
-    # Distance between boundaries
+    
     tDeltaX = abs(1.0 / (direction[0] + 1e-8))
     tDeltaY = abs(1.0 / (direction[1] + 1e-8))
     tDeltaZ = abs(1.0 / (direction[2] + 1e-8))
@@ -57,11 +56,10 @@ def ray_voxel_traversal(ray_origin, ray_direction, chunk, max_distance=128):
     normal = np.zeros(3, dtype='f4')
 
     while traveled <= max_distance:
-        # Check if we’re still inside chunk space
         if 0 <= x < Chunk.WIDTH and 0 <= y < Chunk.HEIGHT and 0 <= z < Chunk.DEPTH:
             if (x, y, z) in chunk.voxels:
-                return (x, y, z)
-        # Move along the axis with the smallest tMax
+                return (x, y, z), normal  # Return both hit position and normal
+
         if tMaxX < tMaxY and tMaxX < tMaxZ:
             traveled = tMaxX
             tMaxX += tDeltaX
@@ -78,7 +76,7 @@ def ray_voxel_traversal(ray_origin, ray_direction, chunk, max_distance=128):
             z += step_z
             normal[:] = [0, 0, -step_z]
 
-    return None
+    return None, None  # Return None for both position and normal if no hit
 
 # --- Helper: Return nearby voxels (including newly exposed ones) ---
 def get_nearby_boundary_voxels(chunk, player_position, radius=5):
@@ -105,60 +103,109 @@ class Chunk:
     def __init__(self):
         self.voxels = {}
         self._mesh_cache = None
-        self.needs_update = True  # Flag to indicate if mesh needs updating
-        # The very bottom layer (y = 0) is Bedrock.
+        self._voxel_mesh_data = {}  # Stores mesh data for each voxel
+        self.needs_update = False
+
+        # Initialize chunk
         for x in range(self.WIDTH):
             for z in range(self.DEPTH):
                 self.voxels[(x, 0, z)] = "Bedrock"
-        # The next 63 layers (y = 1 to 63) are Stone.
         for x in range(self.WIDTH):
             for y in range(1, 64):
                 for z in range(self.DEPTH):
                     self.voxels[(x, y, z)] = "Stone"
 
+        # Build initial meshes for all voxels
+        self._build_all_voxel_meshes()
+        self._update_full_mesh()
+        self.needs_update = True
+
     def remove_voxel(self, pos):
         if pos in self.voxels:
             del self.voxels[pos]
+            # Remove mesh data for this voxel
+            self._voxel_mesh_data.pop(pos, None)
+            # Update neighbors too, since they might now have visible faces
+            self._update_voxel_and_neighbors(pos)
             self.needs_update = True
 
     def add_voxel(self, pos):
         if (0 <= pos[0] < self.WIDTH and 0 <= pos[1] < self.HEIGHT and 0 <= pos[2] < self.DEPTH):
             self.voxels[pos] = "Stone"
+            # Rebuild mesh for this new voxel + neighbors
+            self._update_voxel_and_neighbors(pos)
             self.needs_update = True
+
+    def _build_all_voxel_meshes(self):
+        """Generate meshes for all voxels."""
+        self._voxel_mesh_data = {}
+        for pos in self.voxels.keys():
+            self._voxel_mesh_data[pos] = self._build_voxel_geometry(pos)
+
+    def _build_voxel_geometry(self, pos):
+        """Generate vertices+normals for the faces of one voxel at 'pos' that are visible."""
+        x, y, z = pos
+        faces = {
+            "front":  ((0, 0, 1),  [(0,0,1),(1,0,1),(1,1,1),(0,0,1),(1,1,1),(0,1,1)]),
+            "back":   ((0, 0, -1), [(1,0,0),(0,0,0),(0,1,0),(1,0,0),(0,1,0),(1,1,0)]),
+            "left":   ((-1,0,0),   [(0,0,0),(0,0,1),(0,1,1),(0,0,0),(0,1,1),(0,1,0)]),
+            "right":  ((1, 0, 0),  [(1,0,1),(1,0,0),(1,1,0),(1,0,1),(1,1,0),(1,1,1)]),
+            "top":    ((0, 1, 0),  [(0,1,1),(1,1,1),(1,1,0),(0,1,1),(1,1,0),(0,1,0)]),
+            "bottom": ((0, -1,0),  [(0,0,0),(1,0,0),(1,0,1),(0,0,0),(1,0,1),(0,0,1)]),
+        }
+        verts = []
+        for face, (normal, faceVerts) in faces.items():
+            neighbor = {
+                "front":  (x,   y,   z+1),
+                "back":   (x,   y,   z-1),
+                "left":   (x-1, y,   z),
+                "right":  (x+1, y,   z),
+                "top":    (x,   y+1, z),
+                "bottom": (x,   y-1, z)
+            }[face]
+
+            # If neighbor doesn't exist (or out of chunk) => face is visible
+            if neighbor not in self.voxels:
+                for vx, vy, vz in faceVerts:
+                    verts.extend([
+                        vx + x, vy + y, vz + z,
+                        normal[0], normal[1], normal[2]
+                    ])
+        return np.array(verts, dtype='f4')
+
+    def _update_voxel_and_neighbors(self, pos):
+        """Rebuild mesh for pos and its neighbors (only)."""
+        # Rebuild the mesh data for 'pos'
+        self._voxel_mesh_data.pop(pos, None)  # remove old data
+        if pos in self.voxels:
+            self._voxel_mesh_data[pos] = self._build_voxel_geometry(pos)
+
+        # For each neighbor, remove old data and regenerate
+        offsets = [(1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1)]
+        for ox, oy, oz in offsets:
+            nx, ny, nz = pos[0]+ox, pos[1]+oy, pos[2]+oz
+            neighbor = (nx, ny, nz)
+            if neighbor in self._voxel_mesh_data:
+                # Remove old geometry
+                self._voxel_mesh_data.pop(neighbor, None)
+                # If neighbor voxel still exists, rebuild its faces
+                if neighbor in self.voxels:
+                    self._voxel_mesh_data[neighbor] = self._build_voxel_geometry(neighbor)
+        self._update_full_mesh()
+
+    def _update_full_mesh(self):
+        """Combine all voxel mesh data into a single array."""
+        combined = []
+        for verts in self._voxel_mesh_data.values():
+            combined.extend(verts)
+        self._mesh_cache = np.array(combined, dtype="f4")
+
+    def generate_mesh(self):
+        # Just return our combined mesh
+        return self._mesh_cache
 
     def get_voxel_positions(self):
         return list(self.voxels.keys())
-
-    def generate_mesh(self):
-        vertices = []
-        faces = {
-            "front":  ((0, 0, 1), [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 0, 1), (1, 1, 1), (0, 1, 1)]),
-            "back":   ((0, 0, -1), [(1, 0, 0), (0, 0, 0), (0, 1, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)]),
-            "left":   ((-1, 0, 0), [(0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 0, 0), (0, 1, 1), (0, 1, 0)]),
-            "right":  ((1, 0, 0), [(1, 0, 1), (1, 0, 0), (1, 1, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)]),
-            "top":    ((0, 1, 0), [(0, 1, 1), (1, 1, 1), (1, 1, 0), (0, 1, 1), (1, 1, 0), (0, 1, 0)]),
-            "bottom": ((0, -1, 0), [(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 0), (1, 0, 1), (0, 0, 1)]),
-        }
-        for pos in self.voxels.keys():
-            x, y, z = pos
-            for face, (normal, verts) in faces.items():
-                if face == "front":
-                    neighbor = (x, y, z + 1)
-                elif face == "back":
-                    neighbor = (x, y, z - 1)
-                elif face == "left":
-                    neighbor = (x - 1, y, z)
-                elif face == "right":
-                    neighbor = (x + 1, y, z)
-                elif face == "top":
-                    neighbor = (x, y + 1, z)
-                elif face == "bottom":
-                    neighbor = (x, y - 1, z)
-                if neighbor not in self.voxels:
-                    for vx, vy, vz in verts:
-                        vertices.extend([vx + x, vy + y, vz + z, normal[0], normal[1], normal[2]])
-        self._mesh_cache = np.array(vertices, dtype="f4")
-        return self._mesh_cache
 
     def get_boundary_voxel_positions(self):
         boundary_positions = []
@@ -346,15 +393,16 @@ def main():
             elif event.type == MOUSEBUTTONDOWN:
                 ray_origin = player.position
                 ray_dir = np.array(player.get_direction(), dtype='f4')
-                hit_voxel = ray_voxel_traversal(player.position, player.get_direction(), chunk)
-                hit_normal = None
+                hit_voxel, hit_normal = ray_voxel_traversal(player.position, player.get_direction(), chunk)
                 if hit_voxel is not None:
-                    if event.button == 1:
+                    if event.button == 1:  # Left click
                         chunk.remove_voxel(hit_voxel)
-                    elif event.button == 3:
-                        new_pos = (hit_voxel[0] + int(hit_normal[0]),
-                                   hit_voxel[1] + int(hit_normal[1]),
-                                   hit_voxel[2] + int(hit_normal[2]))
+                    elif event.button == 3:  # Right click
+                        new_pos = (
+                            hit_voxel[0] + int(hit_normal[0]),
+                            hit_voxel[1] + int(hit_normal[1]),
+                            hit_voxel[2] + int(hit_normal[2])
+                        )
                         chunk.add_voxel(new_pos)
 
         keys = pygame.key.get_pressed()
