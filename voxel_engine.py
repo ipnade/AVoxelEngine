@@ -283,7 +283,7 @@ def main():
     ctx = moderngl.create_context()
     ctx.enable(moderngl.DEPTH_TEST)
 
-    # --- Create shader for voxels (unchanged) ---
+    # Keep only the main shader program, remove outline shader
     prog = ctx.program(
         vertex_shader="""
             #version 330
@@ -323,48 +323,6 @@ def main():
     prog["object_color"].value = (0.5, 0.5, 0.5, 1.0)
     prog["ambient_color"].value = (0.2, 0.2, 0.2, 1.0)
 
-    # --- Outline shader and geometry (unchanged) ---
-    outline_prog = ctx.program(
-        vertex_shader="""
-            #version 330
-            in vec3 in_position;
-            uniform mat4 mvp;
-            void main(){
-                gl_Position = mvp * vec4(in_position, 1.0);
-            }
-        """,
-        fragment_shader="""
-            #version 330
-            out vec4 fragColor;
-            void main(){
-                fragColor = vec4(0.0, 0.0, 0.0, 1.0);
-            }
-        """,
-    )
-
-    outline_vertices = np.array([
-        0,0,0,
-        1,0,0,
-        1,1,0,
-        0,1,0,
-        0,0,1,
-        1,0,1,
-        1,1,1,
-        0,1,1,
-    ], dtype='f4')
-    outline_indices = np.array([
-        0,1, 1,2, 2,3, 3,0,  # bottom
-        4,5, 5,6, 6,7, 7,4,  # top
-        0,4, 1,5, 2,6, 3,7   # verticals
-    ], dtype='i4')
-    outline_vbo = ctx.buffer(outline_vertices.tobytes())
-    outline_ibo = ctx.buffer(outline_indices.tobytes())
-    outline_vao = ctx.vertex_array(
-        outline_prog,
-        [(outline_vbo, "3f", "in_position")],
-        outline_ibo
-    )
-
     # --- World and Player ---
     chunk = Chunk()
     player = Player()
@@ -376,16 +334,10 @@ def main():
     )
 
     clock = pygame.time.Clock()
-
-    # --- Throttle outline update ---
-    outline_update_interval = 0.1
-    outline_timer = 0.0
-    cached_hit_voxel = None
-
     running = True
+
     while running:
         dt = clock.tick() / 1000.0
-        outline_timer += dt
 
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
@@ -439,33 +391,6 @@ def main():
         ctx.clear(0.2, 0.3, 0.4)
         mesh_vao.render(mode=moderngl.TRIANGLES)
 
-        # Update outline only every outline_update_interval seconds:
-        if outline_timer >= outline_update_interval:
-            if player_view_changed():
-                ray_origin = player.position
-                ray_dir = player.get_direction()
-                hit_voxel = None
-                hit_t = float('inf')
-                
-                for pos in get_nearby_boundary_voxels(chunk, player.position):
-                    box_min = glm.vec3(*pos)
-                    box_max = box_min + glm.vec3(1.0)
-                    result = ray_box_intersection(ray_origin, ray_dir, box_min, box_max)
-                    if result is not None:
-                        t, _ = result
-                        if 0 < t < hit_t:
-                            hit_t = t
-                            hit_voxel = pos
-                cached_hit_voxel = hit_voxel
-            outline_timer = 0.0
-
-        # Render outline using cached_hit_voxel, if any:
-        if cached_hit_voxel is not None:
-            model = glm.translate(glm.mat4(1.0), glm.vec3(*cached_hit_voxel))
-            outline_mvp = np.array(proj * view * model, dtype='f4').transpose()
-            outline_prog["mvp"].write(outline_mvp.tobytes())
-
-        # Update window title with framerate counter and player coordinates:
         pygame.display.set_caption(
             "AVoxelEngine - FPS: {:.2f} - Pos: {:.2f}, {:.2f}, {:.2f}".format(
                 clock.get_fps(), player.position.x, player.position.y, player.position.z
