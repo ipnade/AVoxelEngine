@@ -28,12 +28,28 @@ def ray_box_intersection(ray_origin, ray_dir, box_min, box_max):
             break
     return t_near, normal
 
+# --- Helper: Return nearby voxels (including newly exposed ones) ---
+def get_nearby_boundary_voxels(chunk, player_position, radius=5):
+    near_voxels = []
+    px, py, pz = map(int, player_position)
+    for pos in chunk.get_voxel_positions():
+        x, y, z = pos
+        if abs(x - px) <= radius and abs(y - py) <= radius and abs(z - pz) <= radius:
+            near_voxels.append(pos)
+    return near_voxels
+
+# --- Helper: Returns whether the player's view has changed significantly ---
+def player_view_changed():
+    # For demonstration purposes, always return True.
+    # Replace with actual logic if needed.
+    return True
+
 # --- Voxel chunk ---
 class Chunk:
     SIZE = 16
 
     def __init__(self):
-        # voxels stored as keys with a value representing the block type ("Stone")
+        # Voxels stored as keys with a value representing the block type ("Stone")
         self.voxels = {}
         # Create a full chunk (all voxels present, type "Stone")
         for x in range(self.SIZE):
@@ -81,9 +97,16 @@ class Chunk:
                 # Only add face if neighbor is missing (not in voxels)
                 if neighbor not in self.voxels:
                     for vx, vy, vz in verts:
-                        # Append position (offset by voxel pos) and the face normal (each 3 floats)
                         vertices.extend([vx + x, vy + y, vz + z, normal[0], normal[1], normal[2]])
         return np.array(vertices, dtype="f4")
+
+    def get_boundary_voxel_positions(self):
+        boundary_positions = []
+        for (x, y, z) in self.voxels.keys():
+            if (x == 0 or y == 0 or z == 0 or
+                x == self.SIZE - 1 or y == self.SIZE - 1 or z == self.SIZE - 1):
+                boundary_positions.append((x, y, z))
+        return boundary_positions
 
 # --- Player controller ---
 class Player:
@@ -91,10 +114,11 @@ class Player:
         self.position = Vector3([20.0, 20.0, 20.0])
         self.yaw = -90.0
         self.pitch = 0.0
-        self.speed = 10.0  # units per second
+        self.speed = 10.0  # Units per second
         self.sensitivity = 0.1
 
     def get_direction(self):
+        # Calculate forward vector
         # Calculate forward vector
         rad_yaw = math.radians(self.yaw)
         rad_pitch = math.radians(self.pitch)
@@ -140,7 +164,7 @@ class Player:
 # --- Main application class ---
 def main():
     pygame.init()
-    width, height = 1600, 900  # Updated window size
+    width, height = 1600, 900
     pygame.display.set_mode((width, height), DOUBLEBUF | OPENGL)
     pygame.mouse.set_visible(False)
     pygame.event.set_grab(True)
@@ -148,7 +172,7 @@ def main():
     ctx = moderngl.create_context()
     ctx.enable(moderngl.DEPTH_TEST)
 
-    # --- Create shader for voxels ---
+    # --- Create shader for voxels (unchanged) ---
     prog = ctx.program(
         vertex_shader="""
             #version 330
@@ -182,11 +206,13 @@ def main():
         """,
     )
 
-    prog["light_dir"].value = tuple((np.array([-0.5, -1.0, -0.3])/ np.linalg.norm([-0.5, -1.0, -0.3])).tolist())
-    prog["object_color"].value = (0.5, 0.5, 0.5, 1.0)  # Gray (Stone) voxels
+    prog["light_dir"].value = tuple(
+        (np.array([-0.5, -1.0, -0.3]) / np.linalg.norm([-0.5, -1.0, -0.3])).tolist()
+    )
+    prog["object_color"].value = (0.5, 0.5, 0.5, 1.0)
     prog["ambient_color"].value = (0.2, 0.2, 0.2, 1.0)
 
-    # --- Create outline shader and geometry (unchanged) ---
+    # --- Outline shader and geometry (unchanged) ---
     outline_prog = ctx.program(
         vertex_shader="""
             #version 330
@@ -232,19 +258,24 @@ def main():
     chunk = Chunk()
     player = Player()
 
-    # Create a buffer for the voxel mesh (reserve an initial size)
-    mesh_vbo = ctx.buffer(reserve=10 * 1024 * 1024)  # adjust size as needed
-    # Create a VAO for the voxel mesh; vertices have 3f for position and 3f for normal
+    # Create a buffer for the voxel mesh
+    mesh_vbo = ctx.buffer(reserve=10 * 1024 * 1024)
     mesh_vao = ctx.vertex_array(
         prog, [(mesh_vbo, "3f 3f", "in_position", "in_normal")]
     )
 
     clock = pygame.time.Clock()
+
+    # --- Throttle outline update ---
+    outline_update_interval = 0.1
+    outline_timer = 0.0
+    cached_hit_voxel = None
+
     running = True
     while running:
-        dt = clock.tick() / 1000.0  # Unlocked framerate
+        dt = clock.tick() / 1000.0
+        outline_timer += dt
 
-        # Process events ...
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                 running = False
@@ -260,7 +291,8 @@ def main():
                 for pos in chunk.get_voxel_positions():
                     box_min = np.array(pos, dtype='f4')
                     box_max = box_min + 1.0
-                    result = ray_box_intersection(np.array(ray_origin, dtype='f4'), ray_dir, box_min, box_max)
+                    result = ray_box_intersection(np.array(ray_origin, dtype='f4'),
+                                                  ray_dir, box_min, box_max)
                     if result is not None:
                         t, normal = result
                         if 0 < t < hit_t:
@@ -288,37 +320,43 @@ def main():
         mvp = proj * view
         prog["mvp"].write(mvp.astype("f4").tobytes())
 
-        # Regenerate the chunk mesh from visible faces and update the mesh VBO
         mesh_data = chunk.generate_mesh()
         mesh_vbo.orphan(size=mesh_data.nbytes)
         mesh_vbo.write(mesh_data.tobytes())
 
-        # Render the voxel chunk (only outer faces are in mesh_data)
         ctx.clear(0.2, 0.3, 0.4)
         mesh_vao.render(mode=moderngl.TRIANGLES)
 
-        # --- Determine the voxel being looked at ---
-        ray_origin = np.array(player.position, dtype='f4')
-        ray_dir = np.array(player.get_direction(), dtype='f4')
-        hit_voxel = None
-        hit_t = float('inf')
-        for pos in chunk.get_voxel_positions():
-            box_min = np.array(pos, dtype='f4')
-            box_max = box_min + 1.0
-            result = ray_box_intersection(ray_origin, ray_dir, box_min, box_max)
-            if result is not None:
-                t, _ = result
-                if 0 < t < hit_t:
-                    hit_t = t
-                    hit_voxel = pos
+        # Update outline only every outline_update_interval seconds:
+        if outline_timer >= outline_update_interval:
+            if player_view_changed():
+                ray_origin = np.array(player.position, dtype='f4')
+                ray_dir = np.array(player.get_direction(), dtype='f4')
+                hit_voxel = None
+                hit_t = float('inf')
+                # Scan only nearby voxels instead of the full chunk boundary.
+                for pos in get_nearby_boundary_voxels(chunk, player.position):
+                    box_min = np.array(pos, dtype='f4')
+                    box_max = box_min + 1.0
+                    result = ray_box_intersection(ray_origin, ray_dir, box_min, box_max)
+                    if result is not None:
+                        t, _ = result
+                        if 0 < t < hit_t:
+                            hit_t = t
+                            hit_voxel = pos
+                cached_hit_voxel = hit_voxel
+            outline_timer = 0.0
 
-        # --- Render outline if a voxel is hit ---
-        if hit_voxel is not None:
-            model = Matrix44.from_translation(np.array(hit_voxel, dtype='f4'))
+        # Render outline using cached_hit_voxel, if any:
+        if cached_hit_voxel is not None:
+            model = Matrix44.from_translation(np.array(cached_hit_voxel, dtype='f4'))
             outline_mvp = mvp * model
             outline_prog["mvp"].write(outline_mvp.astype("f4").tobytes())
             ctx.line_width = 2.0
             outline_vao.render(mode=moderngl.LINES)
+
+        # Update window title with framerate counter:
+        pygame.display.set_caption("AVoxelEngine - FPS: {:.2f}".format(clock.get_fps()))
 
         pygame.display.flip()
 
