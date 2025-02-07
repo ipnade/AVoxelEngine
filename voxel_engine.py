@@ -323,6 +323,64 @@ def main():
     prog["object_color"].value = (0.5, 0.5, 0.5, 1.0)
     prog["ambient_color"].value = (0.2, 0.2, 0.2, 1.0)
 
+    # Modify the outline shader program
+    outline_prog = ctx.program(
+        vertex_shader="""
+            #version 330
+            in vec3 in_position;
+            uniform mat4 mvp;
+            uniform vec3 voxel_pos;
+            
+            void main() {
+                vec3 world_pos = in_position + voxel_pos;
+                vec4 pos = mvp * vec4(world_pos, 1.0);
+                // Small offset towards camera to prevent z-fighting
+                pos.z -= 0.0001;
+                gl_Position = pos;
+            }
+        """,
+        fragment_shader="""
+            #version 330
+            out vec4 fragColor;
+            
+            void main() {
+                fragColor = vec4(0.0, 0.0, 0.0, 1.0);  // Changed to black
+            }
+        """
+    )
+
+    # Enable backface culling
+    ctx.enable(moderngl.CULL_FACE)
+    ctx.front_face = 'ccw'  # Counter-clockwise front faces
+
+    # Modify outline vertices to include proper winding order
+    outline_vertices = np.array([
+        # Front face (CCW)
+        0,0,1, 1,0,1,
+        1,0,1, 1,1,1,
+        1,1,1, 0,1,1,
+        0,1,1, 0,0,1,
+        
+        # Back face (CW to be culled)
+        1,0,0, 0,0,0,
+        1,1,0, 1,0,0,
+        0,1,0, 1,1,0,
+        0,0,0, 0,1,0,
+        
+        # Side edges (front to back)
+        0,0,1, 0,0,0,
+        1,0,1, 1,0,0,
+        1,1,1, 1,1,0,
+        0,1,1, 0,1,0
+    ], dtype='f4')
+
+    outline_vbo = ctx.buffer(outline_vertices)
+    # Update vertex array format to only use position
+    outline_vao = ctx.vertex_array(
+        outline_prog, 
+        [(outline_vbo, '3f', 'in_position')]
+    )
+
     # --- World and Player ---
     chunk = Chunk()
     player = Player()
@@ -388,8 +446,23 @@ def main():
             mesh_vbo.write(mesh_data.tobytes())
             chunk.needs_update = False
 
+        # Ray cast to find looked-at voxel
+        ray_origin = player.position
+        ray_dir = player.get_direction()
+        looked_at_voxel, _ = ray_voxel_traversal(ray_origin, ray_dir, chunk)
+
+        # Regular rendering
         ctx.clear(0.2, 0.3, 0.4)
         mesh_vao.render(mode=moderngl.TRIANGLES)
+
+        # Render outline if looking at a voxel
+        if looked_at_voxel is not None:
+            # Keep depth testing enabled, just disable writing to depth buffer
+            ctx.depth_func = '<='  # Draw if in front or at same depth
+            outline_prog["mvp"].write(mvp.tobytes())
+            outline_prog["voxel_pos"].value = looked_at_voxel
+            outline_vao.render(moderngl.LINES)
+            ctx.depth_func = '<'  # Reset to normal depth testing
 
         pygame.display.set_caption(
             "AVoxelEngine - FPS: {:.2f} - Pos: {:.2f}, {:.2f}, {:.2f}".format(
