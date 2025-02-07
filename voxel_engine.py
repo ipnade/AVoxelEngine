@@ -51,6 +51,40 @@ class Chunk:
     def get_voxel_positions(self):
         return list(self.voxels.keys())
 
+    def generate_mesh(self):
+        vertices = []
+        # Define faces: each with a normal and the two triangles (6 vertices) as positions (relative to voxel)
+        faces = {
+            "front":  ((0,0,1),  [(0,0,1), (1,0,1), (1,1,1), (0,0,1), (1,1,1), (0,1,1)]),
+            "back":   ((0,0,-1), [(1,0,0), (0,0,0), (0,1,0), (1,0,0), (0,1,0), (1,1,0)]),
+            "left":   ((-1,0,0), [(0,0,0), (0,0,1), (0,1,1), (0,0,0), (0,1,1), (0,1,0)]),
+            "right":  ((1,0,0),  [(1,0,1), (1,0,0), (1,1,0), (1,0,1), (1,1,0), (1,1,1)]),
+            "top":    ((0,1,0),  [(0,1,1), (1,1,1), (1,1,0), (0,1,1), (1,1,0), (0,1,0)]),
+            "bottom": ((0,-1,0), [(0,0,0), (1,0,0), (1,0,1), (0,0,0), (1,0,1), (0,0,1)]),
+        }
+        for pos in self.voxels.keys():
+            x, y, z = pos
+            for face, (normal, verts) in faces.items():
+                # Determine neighbor coordinate based on face
+                if face == "front":
+                    neighbor = (x, y, z+1)
+                elif face == "back":
+                    neighbor = (x, y, z-1)
+                elif face == "left":
+                    neighbor = (x-1, y, z)
+                elif face == "right":
+                    neighbor = (x+1, y, z)
+                elif face == "top":
+                    neighbor = (x, y+1, z)
+                elif face == "bottom":
+                    neighbor = (x, y-1, z)
+                # Only add face if neighbor is missing (not in voxels)
+                if neighbor not in self.voxels:
+                    for vx, vy, vz in verts:
+                        # Append position (offset by voxel pos) and the face normal (each 3 floats)
+                        vertices.extend([vx + x, vy + y, vz + z, normal[0], normal[1], normal[2]])
+        return np.array(vertices, dtype="f4")
+
 # --- Player controller ---
 class Player:
     def __init__(self):
@@ -114,21 +148,19 @@ def main():
     ctx = moderngl.create_context()
     ctx.enable(moderngl.DEPTH_TEST)
 
-    # --- Create shaders ---
+    # --- Create shader for voxels ---
     prog = ctx.program(
         vertex_shader="""
             #version 330
             in vec3 in_position;
             in vec3 in_normal;
-            in vec3 instance_translation;
             uniform mat4 mvp;
             out vec3 v_normal;
             out vec3 v_frag_pos;
             void main() {
-                vec4 world_pos = vec4(in_position + instance_translation, 1.0);
+                vec4 world_pos = vec4(in_position, 1.0);
                 gl_Position = mvp * world_pos;
                 v_frag_pos = world_pos.xyz;
-                // Note: assuming model matrix is identity so that normals stay in world space
                 v_normal = in_normal;
             }
         """,
@@ -141,60 +173,20 @@ def main():
             uniform vec4 ambient_color;
             out vec4 fragColor;
             void main() {
-                // Normalize the normal vector
                 vec3 norm = normalize(v_normal);
-                // Ambient term
                 vec3 ambient = ambient_color.rgb * object_color.rgb;
-                // Diffuse term
                 float diff = max(dot(norm, -light_dir), 0.0);
                 vec3 diffuse = diff * object_color.rgb;
-                vec3 result = ambient + diffuse;
-                fragColor = vec4(result, object_color.a);
+                fragColor = vec4(ambient + diffuse, object_color.a);
             }
         """,
     )
 
-    # Set lighting uniforms:
-    prog["light_dir"].value = tuple((np.array([-0.5, -1.0, -0.3]) / np.linalg.norm([-0.5, -1.0, -0.3])).tolist())
-    prog["object_color"].value = (0.5, 0.5, 0.5, 1.0)  # Gray color for stone voxels
+    prog["light_dir"].value = tuple((np.array([-0.5, -1.0, -0.3])/ np.linalg.norm([-0.5, -1.0, -0.3])).tolist())
+    prog["object_color"].value = (0.5, 0.5, 0.5, 1.0)  # Gray (Stone) voxels
     prog["ambient_color"].value = (0.2, 0.2, 0.2, 1.0)
 
-    # --- Cube geometry (each cube is 1x1x1) ---
-    cube_vertices = np.array([
-        # front face (normal: 0,0,1)
-        0,0,1,  0,0,1,    1,0,1,  0,0,1,    1,1,1,  0,0,1,
-        0,0,1,  0,0,1,    1,1,1,  0,0,1,    0,1,1,  0,0,1,
-        # back face (normal: 0,0,-1)
-        1,0,0,  0,0,-1,   0,0,0,  0,0,-1,   0,1,0,  0,0,-1,
-        1,0,0,  0,0,-1,   0,1,0,  0,0,-1,   1,1,0,  0,0,-1,
-        # left face (normal: -1,0,0)
-        0,0,0,  -1,0,0,   0,0,1,  -1,0,0,   0,1,1,  -1,0,0,
-        0,0,0,  -1,0,0,   0,1,1,  -1,0,0,   0,1,0,  -1,0,0,
-        # right face (normal: 1,0,0)
-        1,0,1,  1,0,0,    1,0,0,  1,0,0,    1,1,0,  1,0,0,
-        1,0,1,  1,0,0,    1,1,0,  1,0,0,    1,1,1,  1,0,0,
-        # top face (normal: 0,1,0)
-        0,1,1,  0,1,0,    1,1,1,  0,1,0,    1,1,0,  0,1,0,
-        0,1,1,  0,1,0,    1,1,0,  0,1,0,    0,1,0,  0,1,0,
-        # bottom face (normal: 0,-1,0)
-        0,0,0,  0,-1,0,   1,0,0,  0,-1,0,   1,0,1,  0,-1,0,
-        0,0,0,  0,-1,0,   1,0,1,  0,-1,0,   0,0,1,  0,-1,0
-    ], dtype='f4')
-
-    # Create an empty instance buffer BEFORE creating the VAO.
-    instance_buffer = ctx.buffer(reserve=10000 * 12)  # reserve bytes for 10000 instances (3 floats each)
-
-    vbo = ctx.buffer(cube_vertices.tobytes())
-
-    vao = ctx.vertex_array(
-        prog,
-        [
-            (vbo, "3f 3f", "in_position", "in_normal"),
-            (instance_buffer, "3f/i", "instance_translation"),
-        ]
-    )
-
-    # --- Create outline shader and geometry ---
+    # --- Create outline shader and geometry (unchanged) ---
     outline_prog = ctx.program(
         vertex_shader="""
             #version 330
@@ -208,12 +200,11 @@ def main():
             #version 330
             out vec4 fragColor;
             void main(){
-                fragColor = vec4(0.0, 0.0, 0.0, 1.0); // Black color
+                fragColor = vec4(0.0, 0.0, 0.0, 1.0);
             }
         """,
     )
 
-    # Define cube corners (for a unit cube from 0 to 1) and edge indices
     outline_vertices = np.array([
         0,0,0,
         1,0,0,
@@ -224,13 +215,11 @@ def main():
         1,1,1,
         0,1,1,
     ], dtype='f4')
-
     outline_indices = np.array([
-        0,1, 1,2, 2,3, 3,0,  # bottom square
-        4,5, 5,6, 6,7, 7,4,  # top square
-        0,4, 1,5, 2,6, 3,7   # vertical edges
+        0,1, 1,2, 2,3, 3,0,  # bottom
+        4,5, 5,6, 6,7, 7,4,  # top
+        0,4, 1,5, 2,6, 3,7   # verticals
     ], dtype='i4')
-
     outline_vbo = ctx.buffer(outline_vertices.tobytes())
     outline_ibo = ctx.buffer(outline_indices.tobytes())
     outline_vao = ctx.vertex_array(
@@ -243,12 +232,19 @@ def main():
     chunk = Chunk()
     player = Player()
 
+    # Create a buffer for the voxel mesh (reserve an initial size)
+    mesh_vbo = ctx.buffer(reserve=10 * 1024 * 1024)  # adjust size as needed
+    # Create a VAO for the voxel mesh; vertices have 3f for position and 3f for normal
+    mesh_vao = ctx.vertex_array(
+        prog, [(mesh_vbo, "3f 3f", "in_position", "in_normal")]
+    )
+
     clock = pygame.time.Clock()
     running = True
     while running:
-        dt = clock.tick() / 1000.0  # Unlock framerate (no frame cap)
+        dt = clock.tick() / 1000.0  # Unlocked framerate
 
-        # Process events
+        # Process events ...
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                 running = False
@@ -256,7 +252,6 @@ def main():
                 dx, dy = event.rel
                 player.process_mouse(dx, dy)
             elif event.type == MOUSEBUTTONDOWN:
-                # Use ray intersection to remove/add voxels when clicking
                 ray_origin = player.position
                 ray_dir = np.array(player.get_direction(), dtype='f4')
                 hit_voxel = None
@@ -273,9 +268,9 @@ def main():
                             hit_voxel = pos
                             hit_normal = normal
                 if hit_voxel is not None:
-                    if event.button == 1:  # Left click: remove voxel
+                    if event.button == 1:
                         chunk.remove_voxel(hit_voxel)
-                    elif event.button == 3:  # Right click: add voxel adjacent to hit face
+                    elif event.button == 3:
                         new_pos = (hit_voxel[0] + int(hit_normal[0]),
                                    hit_voxel[1] + int(hit_normal[1]),
                                    hit_voxel[2] + int(hit_normal[2]))
@@ -284,28 +279,25 @@ def main():
         keys = pygame.key.get_pressed()
         player.process_keyboard(keys, dt)
 
-        # Calculate view and projection matrices
         view = Matrix44.look_at(
             player.position,
             player.position + player.get_direction(),
             Vector3([0.0, 1.0, 0.0]),
         )
-        proj = Matrix44.perspective_projection(70.0, width / height, 0.1, 1000.0)
+        proj = Matrix44.perspective_projection(70.0, width/height, 0.1, 1000.0)
         mvp = proj * view
         prog["mvp"].write(mvp.astype("f4").tobytes())
 
-        # Update instance buffer with all cube translations from the chunk
-        positions = np.array(chunk.get_voxel_positions(), dtype='f4')
-        if positions.size == 0:
-            instance_buffer.write(np.array([], dtype='f4').tobytes())
-        else:
-            instance_buffer.write(positions.tobytes())
+        # Regenerate the chunk mesh from visible faces and update the mesh VBO
+        mesh_data = chunk.generate_mesh()
+        mesh_vbo.orphan(size=mesh_data.nbytes)
+        mesh_vbo.write(mesh_data.tobytes())
 
-        # Render scene
+        # Render the voxel chunk (only outer faces are in mesh_data)
         ctx.clear(0.2, 0.3, 0.4)
-        vao.render(mode=moderngl.TRIANGLES, instances=len(chunk.get_voxel_positions()))
+        mesh_vao.render(mode=moderngl.TRIANGLES)
 
-        # --- Determine the voxel being looked at (center ray) ---
+        # --- Determine the voxel being looked at ---
         ray_origin = np.array(player.position, dtype='f4')
         ray_dir = np.array(player.get_direction(), dtype='f4')
         hit_voxel = None
@@ -322,11 +314,10 @@ def main():
 
         # --- Render outline if a voxel is hit ---
         if hit_voxel is not None:
-            # Build model matrix for the outline (translate to hit voxel)
             model = Matrix44.from_translation(np.array(hit_voxel, dtype='f4'))
             outline_mvp = mvp * model
             outline_prog["mvp"].write(outline_mvp.astype("f4").tobytes())
-            ctx.line_width = 2.0  # Set a thin line width
+            ctx.line_width = 2.0
             outline_vao.render(mode=moderngl.LINES)
 
         pygame.display.flip()
