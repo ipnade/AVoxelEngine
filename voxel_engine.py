@@ -4,56 +4,62 @@ import numpy as np
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL, QUIT, MOUSEMOTION, MOUSEBUTTONDOWN, KEYDOWN, K_ESCAPE
 import moderngl
-from pyrr import Matrix44, Vector3
+import glm
 
 # --- Helpers for ray-box intersection ---
 def ray_box_intersection(ray_origin, ray_dir, box_min, box_max):
-    tmin = (box_min - ray_origin) / ray_dir
-    tmax = (box_max - ray_origin) / ray_dir
+    # Convert inputs to numpy arrays for calculations
+    origin = np.array([ray_origin.x, ray_origin.y, ray_origin.z], dtype='f4')
+    direction = np.array([ray_dir.x, ray_dir.z, ray_dir.z], dtype='f4')
+    box_min = np.array(box_min, dtype='f4')
+    box_max = np.array(box_max, dtype='f4')
+
+    tmin = (box_min - origin) / direction
+    tmax = (box_max - origin) / direction
     t1 = np.minimum(tmin, tmax)
     t2 = np.maximum(tmin, tmax)
     t_near = np.max(t1)
     t_far = np.min(t2)
+    
     if t_far < 0 or t_near > t_far:
         return None
+        
     # Determine hit face normal based on which axis t_near comes from
     epsilon = 1e-4
-    normal = np.zeros(3, dtype='f4')
+    normal = glm.vec3(0)  # Use GLM vector for normal
     for i in range(3):
-        if abs((box_min[i] - ray_origin[i]) - ray_dir[i]*t_near) < epsilon:
+        if abs((box_min[i] - origin[i]) - direction[i]*t_near) < epsilon:
             normal[i] = -1
             break
-        if abs((box_max[i] - ray_origin[i]) - ray_dir[i]*t_near) < epsilon:
+        if abs((box_max[i] - origin[i]) - direction[i]*t_near) < epsilon:
             normal[i] = 1
             break
     return t_near, normal
 
 def ray_voxel_traversal(ray_origin, ray_direction, chunk, max_distance=128):
-    origin = np.array(ray_origin, dtype='f4')
-    direction = np.array(ray_direction, dtype='f4')
-    direction /= (np.linalg.norm(direction) + 1e-8)
+    # Convert inputs to glm vectors if they aren't already
+    origin = glm.vec3(*ray_origin) if not isinstance(ray_origin, glm.vec3) else ray_origin
+    direction = glm.normalize(glm.vec3(*ray_direction)) if not isinstance(ray_direction, glm.vec3) else ray_direction
 
-    # Find the starting voxel
     x, y, z = map(int, origin)
-    step_x = 1 if direction[0] >= 0 else -1
-    step_y = 1 if direction[1] >= 0 else -1
-    step_z = 1 if direction[2] >= 0 else -1
+    step_x = 1 if direction.x >= 0 else -1
+    step_y = 1 if direction.y >= 0 else -1
+    step_z = 1 if direction.z >= 0 else -1
 
-    # Ray parameter when crossing Voxel boundaries
     def t_scale(i, o, d, step):
         boundary = i + (1 if step > 0 else 0)
         return (boundary - o) / (d + 1e-8)
 
-    tMaxX = t_scale(x, origin[0], direction[0], step_x)
-    tMaxY = t_scale(y, origin[1], direction[1], step_y)
-    tMaxZ = t_scale(z, origin[2], direction[2], step_z)
+    tMaxX = t_scale(x, origin.x, direction.x, step_x)
+    tMaxY = t_scale(y, origin.y, direction.y, step_y)
+    tMaxZ = t_scale(z, origin.z, direction.z, step_z)
     
-    tDeltaX = abs(1.0 / (direction[0] + 1e-8))
-    tDeltaY = abs(1.0 / (direction[1] + 1e-8))
-    tDeltaZ = abs(1.0 / (direction[2] + 1e-8))
+    tDeltaX = abs(1.0 / (direction.x + 1e-8))
+    tDeltaY = abs(1.0 / (direction.y + 1e-8))
+    tDeltaZ = abs(1.0 / (direction.z + 1e-8))
 
     traveled = 0.0
-    normal = np.zeros(3, dtype='f4')
+    normal = glm.vec3(0)  # Instead of np.zeros(3)
 
     while traveled <= max_distance:
         if 0 <= x < Chunk.WIDTH and 0 <= y < Chunk.HEIGHT and 0 <= z < Chunk.DEPTH:
@@ -64,17 +70,17 @@ def ray_voxel_traversal(ray_origin, ray_direction, chunk, max_distance=128):
             traveled = tMaxX
             tMaxX += tDeltaX
             x += step_x
-            normal[:] = [-step_x, 0, 0]
+            normal = glm.vec3(-step_x, 0, 0)  # Create new vector instead of modifying
         elif tMaxY < tMaxZ:
             traveled = tMaxY
             tMaxY += tDeltaY
             y += step_y
-            normal[:] = [0, -step_y, 0]
+            normal = glm.vec3(0, -step_y, 0)  # Create new vector instead of modifying
         else:
             traveled = tMaxZ
             tMaxZ += tDeltaZ
             z += step_z
-            normal[:] = [0, 0, -step_z]
+            normal = glm.vec3(0, 0, -step_z)  # Create new vector instead of modifying
 
     return None, None  # Return None for both position and normal if no hit
 
@@ -218,33 +224,30 @@ class Chunk:
 # --- Player controller ---
 class Player:
     def __init__(self):
-        # Set starting position above the chunk (chunk ranges x:0-15, y:0-63, z:0-15)
-        self.position = Vector3([8.0, 70.0, 8.0])
+        # Replace Vector3 with glm.vec3
+        self.position = glm.vec3(8.0, 70.0, 8.0)
         self.yaw = -90.0
         self.pitch = 0.0
-        self.speed = 10.0  # Units per second
+        self.speed = 10.0
         self.sensitivity = 0.1
 
     def get_direction(self):
-        # Calculate forward vector
-        # Calculate forward vector
         rad_yaw = math.radians(self.yaw)
         rad_pitch = math.radians(self.pitch)
         x = math.cos(rad_yaw) * math.cos(rad_pitch)
         y = math.sin(rad_pitch)
         z = math.sin(rad_yaw) * math.cos(rad_pitch)
-        return Vector3([x, y, z]).normalized
+        return glm.normalize(glm.vec3(x, y, z))
 
     def get_right(self):
-        # Right vector is computed as cross(forward, world_up)
-        return self.get_direction().cross(Vector3([0, 1, 0])).normalized
+        # Use glm.cross instead of Vector3.cross
+        return glm.normalize(glm.cross(self.get_direction(), glm.vec3(0, 1, 0)))
 
     def get_left(self):
         return -self.get_right()
 
     def get_up(self):
-        # Cross product of right and forward gives up
-        return self.get_right().cross(self.get_direction()).normalized
+        return glm.normalize(glm.cross(self.get_right(), self.get_direction()))
 
     def process_mouse(self, dx, dy):
         self.yaw += dx * self.sensitivity
@@ -255,7 +258,7 @@ class Player:
         forward = self.get_direction()
         right = self.get_right()
         left = self.get_left()  # Added left vector for clarity, though -right works too.
-        up = Vector3([0, 1, 0])
+        up = glm.vec3(0, 1, 0)
         if keys[pygame.K_w]:
             self.position += forward * (self.speed * dt)
         if keys[pygame.K_s]:
@@ -392,30 +395,39 @@ def main():
                 player.process_mouse(dx, dy)
             elif event.type == MOUSEBUTTONDOWN:
                 ray_origin = player.position
-                ray_dir = np.array(player.get_direction(), dtype='f4')
-                hit_voxel, hit_normal = ray_voxel_traversal(player.position, player.get_direction(), chunk)
+                ray_dir = player.get_direction()
+                hit_voxel, hit_normal = ray_voxel_traversal(ray_origin, ray_dir, chunk)
                 if hit_voxel is not None:
                     if event.button == 1:  # Left click
                         chunk.remove_voxel(hit_voxel)
                     elif event.button == 3:  # Right click
-                        new_pos = (
-                            hit_voxel[0] + int(hit_normal[0]),
-                            hit_voxel[1] + int(hit_normal[1]),
-                            hit_voxel[2] + int(hit_normal[2])
-                        )
-                        chunk.add_voxel(new_pos)
+                        if hit_normal is not None:
+                            new_pos = (
+                                hit_voxel[0] + int(hit_normal.x),
+                                hit_voxel[1] + int(hit_normal.y),
+                                hit_voxel[2] + int(hit_normal.z)
+                            )
+                            chunk.add_voxel(new_pos)
 
         keys = pygame.key.get_pressed()
         player.process_keyboard(keys, dt)
 
-        view = Matrix44.look_at(
-            player.position,
-            player.position + player.get_direction(),
-            Vector3([0.0, 1.0, 0.0]),
+        view = glm.lookAt(
+            player.position,  # eye
+            player.position + player.get_direction(),  # center
+            glm.vec3(0.0, 1.0, 0.0)  # up
         )
-        proj = Matrix44.perspective_projection(70.0, width/height, 0.1, 1000.0)
-        mvp = proj * view
-        prog["mvp"].write(mvp.astype("f4").tobytes())
+        
+        proj = glm.perspective(
+            glm.radians(70.0),  # fov in radians
+            width/height,  # aspect ratio
+            0.1,  # near
+            1000.0  # far
+        )
+        
+        # Convert matrices to column-major order for OpenGL
+        mvp = np.array(proj * view, dtype='f4').transpose()
+        prog["mvp"].write(mvp.tobytes())
 
         # Update mesh only if the chunk has been modified.
         if chunk.needs_update:
@@ -430,14 +442,14 @@ def main():
         # Update outline only every outline_update_interval seconds:
         if outline_timer >= outline_update_interval:
             if player_view_changed():
-                ray_origin = np.array(player.position, dtype='f4')
-                ray_dir = np.array(player.get_direction(), dtype='f4')
+                ray_origin = player.position
+                ray_dir = player.get_direction()
                 hit_voxel = None
                 hit_t = float('inf')
-                # Scan only nearby voxels instead of the full chunk boundary.
+                
                 for pos in get_nearby_boundary_voxels(chunk, player.position):
-                    box_min = np.array(pos, dtype='f4')
-                    box_max = box_min + 1.0
+                    box_min = glm.vec3(*pos)
+                    box_max = box_min + glm.vec3(1.0)
                     result = ray_box_intersection(ray_origin, ray_dir, box_min, box_max)
                     if result is not None:
                         t, _ = result
@@ -449,11 +461,9 @@ def main():
 
         # Render outline using cached_hit_voxel, if any:
         if cached_hit_voxel is not None:
-            model = Matrix44.from_translation(np.array(cached_hit_voxel, dtype='f4'))
-            outline_mvp = mvp * model
-            outline_prog["mvp"].write(outline_mvp.astype("f4").tobytes())
-            ctx.line_width = 2.0
-            outline_vao.render(mode=moderngl.LINES)
+            model = glm.translate(glm.mat4(1.0), glm.vec3(*cached_hit_voxel))
+            outline_mvp = np.array(proj * view * model, dtype='f4').transpose()
+            outline_prog["mvp"].write(outline_mvp.tobytes())
 
         # Update window title with framerate counter and player coordinates:
         pygame.display.set_caption(
