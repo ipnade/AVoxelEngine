@@ -46,72 +46,81 @@ def player_view_changed():
 
 # --- Voxel chunk ---
 class Chunk:
-    SIZE = 16
+    WIDTH = 16
+    HEIGHT = 128
+    DEPTH = 16
 
     def __init__(self):
-        # Voxels stored as keys with a value representing the block type ("Stone")
         self.voxels = {}
-        # Create a full chunk (all voxels present, type "Stone")
-        for x in range(self.SIZE):
-            for y in range(self.SIZE):
-                for z in range(self.SIZE):
+        self._mesh_cache = None
+        self.needs_update = True  # Flag to indicate if mesh needs updating
+        # The very bottom layer (y = 0) is Bedrock.
+        for x in range(self.WIDTH):
+            for z in range(self.DEPTH):
+                self.voxels[(x, 0, z)] = "Bedrock"
+        # The next 63 layers (y = 1 to 63) are Stone.
+        for x in range(self.WIDTH):
+            for y in range(1, 64):
+                for z in range(self.DEPTH):
                     self.voxels[(x, y, z)] = "Stone"
 
     def remove_voxel(self, pos):
         if pos in self.voxels:
             del self.voxels[pos]
+            self.needs_update = True
 
     def add_voxel(self, pos):
-        self.voxels[pos] = "Stone"
+        if (0 <= pos[0] < self.WIDTH and 0 <= pos[1] < self.HEIGHT and 0 <= pos[2] < self.DEPTH):
+            self.voxels[pos] = "Stone"
+            self.needs_update = True
 
     def get_voxel_positions(self):
         return list(self.voxels.keys())
 
     def generate_mesh(self):
         vertices = []
-        # Define faces: each with a normal and the two triangles (6 vertices) as positions (relative to voxel)
         faces = {
-            "front":  ((0,0,1),  [(0,0,1), (1,0,1), (1,1,1), (0,0,1), (1,1,1), (0,1,1)]),
-            "back":   ((0,0,-1), [(1,0,0), (0,0,0), (0,1,0), (1,0,0), (0,1,0), (1,1,0)]),
-            "left":   ((-1,0,0), [(0,0,0), (0,0,1), (0,1,1), (0,0,0), (0,1,1), (0,1,0)]),
-            "right":  ((1,0,0),  [(1,0,1), (1,0,0), (1,1,0), (1,0,1), (1,1,0), (1,1,1)]),
-            "top":    ((0,1,0),  [(0,1,1), (1,1,1), (1,1,0), (0,1,1), (1,1,0), (0,1,0)]),
-            "bottom": ((0,-1,0), [(0,0,0), (1,0,0), (1,0,1), (0,0,0), (1,0,1), (0,0,1)]),
+            "front":  ((0, 0, 1), [(0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 0, 1), (1, 1, 1), (0, 1, 1)]),
+            "back":   ((0, 0, -1), [(1, 0, 0), (0, 0, 0), (0, 1, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0)]),
+            "left":   ((-1, 0, 0), [(0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 0, 0), (0, 1, 1), (0, 1, 0)]),
+            "right":  ((1, 0, 0), [(1, 0, 1), (1, 0, 0), (1, 1, 0), (1, 0, 1), (1, 1, 0), (1, 1, 1)]),
+            "top":    ((0, 1, 0), [(0, 1, 1), (1, 1, 1), (1, 1, 0), (0, 1, 1), (1, 1, 0), (0, 1, 0)]),
+            "bottom": ((0, -1, 0), [(0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 0), (1, 0, 1), (0, 0, 1)]),
         }
         for pos in self.voxels.keys():
             x, y, z = pos
             for face, (normal, verts) in faces.items():
-                # Determine neighbor coordinate based on face
                 if face == "front":
-                    neighbor = (x, y, z+1)
+                    neighbor = (x, y, z + 1)
                 elif face == "back":
-                    neighbor = (x, y, z-1)
+                    neighbor = (x, y, z - 1)
                 elif face == "left":
-                    neighbor = (x-1, y, z)
+                    neighbor = (x - 1, y, z)
                 elif face == "right":
-                    neighbor = (x+1, y, z)
+                    neighbor = (x + 1, y, z)
                 elif face == "top":
-                    neighbor = (x, y+1, z)
+                    neighbor = (x, y + 1, z)
                 elif face == "bottom":
-                    neighbor = (x, y-1, z)
-                # Only add face if neighbor is missing (not in voxels)
+                    neighbor = (x, y - 1, z)
                 if neighbor not in self.voxels:
                     for vx, vy, vz in verts:
                         vertices.extend([vx + x, vy + y, vz + z, normal[0], normal[1], normal[2]])
-        return np.array(vertices, dtype="f4")
+        self._mesh_cache = np.array(vertices, dtype="f4")
+        return self._mesh_cache
 
     def get_boundary_voxel_positions(self):
         boundary_positions = []
         for (x, y, z) in self.voxels.keys():
             if (x == 0 or y == 0 or z == 0 or
-                x == self.SIZE - 1 or y == self.SIZE - 1 or z == self.SIZE - 1):
+                x == self.WIDTH - 1 or y == self.HEIGHT - 1 or z == self.DEPTH - 1):
                 boundary_positions.append((x, y, z))
         return boundary_positions
 
 # --- Player controller ---
 class Player:
     def __init__(self):
-        self.position = Vector3([20.0, 20.0, 20.0])
+        # Set starting position above the chunk (chunk ranges x:0-15, y:0-63, z:0-15)
+        self.position = Vector3([8.0, 70.0, 8.0])
         self.yaw = -90.0
         self.pitch = 0.0
         self.speed = 10.0  # Units per second
@@ -320,9 +329,12 @@ def main():
         mvp = proj * view
         prog["mvp"].write(mvp.astype("f4").tobytes())
 
-        mesh_data = chunk.generate_mesh()
-        mesh_vbo.orphan(size=mesh_data.nbytes)
-        mesh_vbo.write(mesh_data.tobytes())
+        # Update mesh only if the chunk has been modified.
+        if chunk.needs_update:
+            mesh_data = chunk.generate_mesh()
+            mesh_vbo.orphan(size=mesh_data.nbytes)
+            mesh_vbo.write(mesh_data.tobytes())
+            chunk.needs_update = False
 
         ctx.clear(0.2, 0.3, 0.4)
         mesh_vao.render(mode=moderngl.TRIANGLES)
@@ -355,8 +367,12 @@ def main():
             ctx.line_width = 2.0
             outline_vao.render(mode=moderngl.LINES)
 
-        # Update window title with framerate counter:
-        pygame.display.set_caption("AVoxelEngine - FPS: {:.2f}".format(clock.get_fps()))
+        # Update window title with framerate counter and player coordinates:
+        pygame.display.set_caption(
+            "AVoxelEngine - FPS: {:.2f} - Pos: {:.2f}, {:.2f}, {:.2f}".format(
+                clock.get_fps(), player.position.x, player.position.y, player.position.z
+            )
+        )
 
         pygame.display.flip()
 
