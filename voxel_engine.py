@@ -28,6 +28,58 @@ def ray_box_intersection(ray_origin, ray_dir, box_min, box_max):
             break
     return t_near, normal
 
+def ray_voxel_traversal(ray_origin, ray_direction, chunk, max_distance=128):
+    origin = np.array(ray_origin, dtype='f4')
+    direction = np.array(ray_direction, dtype='f4')
+    direction /= (np.linalg.norm(direction) + 1e-8)
+
+    # Find the starting voxel
+    x, y, z = map(int, origin)
+    step_x = 1 if direction[0] >= 0 else -1
+    step_y = 1 if direction[1] >= 0 else -1
+    step_z = 1 if direction[2] >= 0 else -1
+
+    # Ray parameter when crossing Voxel boundaries
+    def t_scale(i, o, d, step):
+        # Distance to next boundary in that axis
+        boundary = i + (1 if step > 0 else 0)
+        return (boundary - o) / (d + 1e-8)
+
+    tMaxX = t_scale(x, origin[0], direction[0], step_x)
+    tMaxY = t_scale(y, origin[1], direction[1], step_y)
+    tMaxZ = t_scale(z, origin[2], direction[2], step_z)
+    # Distance between boundaries
+    tDeltaX = abs(1.0 / (direction[0] + 1e-8))
+    tDeltaY = abs(1.0 / (direction[1] + 1e-8))
+    tDeltaZ = abs(1.0 / (direction[2] + 1e-8))
+
+    traveled = 0.0
+    normal = np.zeros(3, dtype='f4')
+
+    while traveled <= max_distance:
+        # Check if we’re still inside chunk space
+        if 0 <= x < Chunk.WIDTH and 0 <= y < Chunk.HEIGHT and 0 <= z < Chunk.DEPTH:
+            if (x, y, z) in chunk.voxels:
+                return (x, y, z)
+        # Move along the axis with the smallest tMax
+        if tMaxX < tMaxY and tMaxX < tMaxZ:
+            traveled = tMaxX
+            tMaxX += tDeltaX
+            x += step_x
+            normal[:] = [-step_x, 0, 0]
+        elif tMaxY < tMaxZ:
+            traveled = tMaxY
+            tMaxY += tDeltaY
+            y += step_y
+            normal[:] = [0, -step_y, 0]
+        else:
+            traveled = tMaxZ
+            tMaxZ += tDeltaZ
+            z += step_z
+            normal[:] = [0, 0, -step_z]
+
+    return None
+
 # --- Helper: Return nearby voxels (including newly exposed ones) ---
 def get_nearby_boundary_voxels(chunk, player_position, radius=5):
     near_voxels = []
@@ -294,20 +346,8 @@ def main():
             elif event.type == MOUSEBUTTONDOWN:
                 ray_origin = player.position
                 ray_dir = np.array(player.get_direction(), dtype='f4')
-                hit_voxel = None
-                hit_t = float('inf')
+                hit_voxel = ray_voxel_traversal(player.position, player.get_direction(), chunk)
                 hit_normal = None
-                for pos in chunk.get_voxel_positions():
-                    box_min = np.array(pos, dtype='f4')
-                    box_max = box_min + 1.0
-                    result = ray_box_intersection(np.array(ray_origin, dtype='f4'),
-                                                  ray_dir, box_min, box_max)
-                    if result is not None:
-                        t, normal = result
-                        if 0 < t < hit_t:
-                            hit_t = t
-                            hit_voxel = pos
-                            hit_normal = normal
                 if hit_voxel is not None:
                     if event.button == 1:
                         chunk.remove_voxel(hit_voxel)
