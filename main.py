@@ -5,10 +5,9 @@ import moderngl
 import glm
 
 from player import Player
-from voxel_chunk import Chunk
+from world import World  # Updated: use World instead of single Chunk
 from raycast import ray_voxel_traversal
 from shader_program import ShaderProgram
-
 
 class VoxelEngine:
     def __init__(self, width=1600, height=900):
@@ -33,7 +32,7 @@ class VoxelEngine:
         self.ctx.front_face = 'ccw'
     
     def init_game_objects(self):
-        self.chunk = Chunk()
+        self.world = World()  # New: spawn a 4x4 grid of chunks
         self.player = Player()
         self.mesh_vbo = self.ctx.buffer(reserve=10 * 1024 * 1024)
         self.mesh_vao = self.shader_program.create_mesh_vao(self.mesh_vbo)
@@ -48,18 +47,26 @@ class VoxelEngine:
             elif event.type == MOUSEBUTTONDOWN:
                 ray_origin = self.player.position
                 ray_dir = self.player.get_direction()
-                hit_voxel, hit_normal = ray_voxel_traversal(ray_origin, ray_dir, self.chunk)
+                hit_voxel, hit_normal = self.world.ray_voxel_traversal(ray_origin, ray_dir)
                 if hit_voxel is not None:
-                    if event.button == 1:  # Left click
-                        self.chunk.remove_voxel(hit_voxel)
-                    elif event.button == 3:  # Right click
-                        if hit_normal is not None:
-                            new_pos = (
-                                hit_voxel[0] + int(hit_normal.x),
-                                hit_voxel[1] + int(hit_normal.y),
-                                hit_voxel[2] + int(hit_normal.z)
-                            )
-                            self.chunk.add_voxel(new_pos)
+                    chunk = self.world.get_chunk_at(hit_voxel)
+                    if chunk:
+                        # Calculate local voxel coordinate within the chunk.
+                        local_hit = (
+                            hit_voxel[0] - chunk.offset[0],
+                            hit_voxel[1] - chunk.offset[1],
+                            hit_voxel[2] - chunk.offset[2]
+                        )
+                        if event.button == 1:  # Left click: remove voxel
+                            chunk.remove_voxel(local_hit)
+                        elif event.button == 3:  # Right click: add voxel
+                            if hit_normal is not None:
+                                new_local = (
+                                    local_hit[0] + int(hit_normal.x),
+                                    local_hit[1] + int(hit_normal.y),
+                                    local_hit[2] + int(hit_normal.z)
+                                )
+                                chunk.add_voxel(new_local)
         keys = pygame.key.get_pressed()
         self.player.process_keyboard(keys, dt)
         return True
@@ -78,28 +85,22 @@ class VoxelEngine:
             1000.0  # far
         )
         
-        # Convert matrices to column-major order for OpenGL
         mvp = np.array(proj * view, dtype='f4').transpose()
-        # Change this line:
         self.shader_program.main_prog["mvp"].write(mvp.tobytes())
 
-        # Update mesh only if the chunk has been modified.
-        if self.chunk.needs_update:
-            mesh_data = self.chunk.generate_mesh()
+        if self.world.any_chunk_needs_update():
+            mesh_data = self.world.generate_mesh()
             self.mesh_vbo.orphan(size=mesh_data.nbytes)
             self.mesh_vbo.write(mesh_data.tobytes())
-            self.chunk.needs_update = False
+            self.world.clear_update_flags()
 
-        # Ray cast to find looked-at voxel
         ray_origin = self.player.position
         ray_dir = self.player.get_direction()
-        self.looked_at_voxel, _ = ray_voxel_traversal(ray_origin, ray_dir, self.chunk)
+        self.looked_at_voxel, _ = self.world.ray_voxel_traversal(ray_origin, ray_dir)
 
     def render(self):
         self.ctx.clear(0.2, 0.3, 0.4)
         self.mesh_vao.render(mode=moderngl.TRIANGLES)
-
-        # Render outline if looking at a voxel
         if self.looked_at_voxel is not None:
             self.ctx.depth_func = '<='
             self.shader_program.outline_prog["mvp"].write(
@@ -107,7 +108,7 @@ class VoxelEngine:
             )
             self.shader_program.outline_prog["voxel_pos"].value = self.looked_at_voxel
             self.shader_program.outline_vao.render(moderngl.LINES)
-            self.ctx.depth_func = '<'  # Reset to normal depth testing
+            self.ctx.depth_func = '<'
 
     def display_fps(self):
         pygame.display.set_caption(

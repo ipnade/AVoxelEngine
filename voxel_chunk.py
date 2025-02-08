@@ -5,13 +5,14 @@ class Chunk:
     HEIGHT = 128
     DEPTH = 16
 
-    def __init__(self):
+    def __init__(self, offset=(0, 0, 0)):
+        self.offset = offset  # New: store chunk offset (world position)
         self.voxels = {}
         self._mesh_cache = None
         self._voxel_mesh_data = {}  # Stores mesh data for each voxel
         self.needs_update = False
 
-        # Initialize chunk
+        # Initialize chunk voxels (positions are relative to the chunk)
         for x in range(self.WIDTH):
             for z in range(self.DEPTH):
                 self.voxels[(x, 0, z)] = "Bedrock"
@@ -48,8 +49,9 @@ class Chunk:
             self._voxel_mesh_data[pos] = self._build_voxel_geometry(pos)
 
     def _build_voxel_geometry(self, pos):
-        """Generate vertices+normals for the faces of one voxel at 'pos' that are visible."""
+        """Generate vertices+normals for the faces of one voxel (with chunk offset)."""
         x, y, z = pos
+        ox, oy, oz = self.offset  # chunk world offset
         faces = {
             "front":  ((0, 0, 1),  [(0,0,1),(1,0,1),(1,1,1),(0,0,1),(1,1,1),(0,1,1)]),
             "back":   ((0, 0, -1), [(1,0,0),(0,0,0),(0,1,0),(1,0,0),(0,1,0),(1,1,0)]),
@@ -68,12 +70,10 @@ class Chunk:
                 "top":    (x,   y+1, z),
                 "bottom": (x,   y-1, z)
             }[face]
-
-            # If neighbor doesn't exist (or out of chunk) => face is visible
             if neighbor not in self.voxels:
                 for vx, vy, vz in faceVerts:
                     verts.extend([
-                        vx + x, vy + y, vz + z,
+                        vx + x + ox, vy + y + oy, vz + z + oz,
                         normal[0], normal[1], normal[2]
                     ])
         return np.array(verts, dtype='f4')
