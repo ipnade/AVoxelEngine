@@ -1,4 +1,3 @@
-# Python
 import numpy as np
 import pygame
 from pygame.locals import DOUBLEBUF, OPENGL, QUIT, MOUSEMOTION, MOUSEBUTTONDOWN, KEYDOWN, K_ESCAPE
